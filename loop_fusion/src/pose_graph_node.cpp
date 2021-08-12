@@ -299,7 +299,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     Vector3d vio_t_cam;
     Quaterniond vio_q_cam;
     vio_t_cam = vio_t + vio_q * tic;
-    vio_q_cam = vio_q * qic;        
+    vio_q_cam = vio_q * qic;
 
     if (!VISUALIZE_IMU_FORWARD)
     {
@@ -398,7 +398,7 @@ void process()
                 point_buf.pop();
                 printf("throw point at beginning\n");
             }
-            else if (image_buf.back()->header.stamp.toSec() >= pose_buf.front()->header.stamp.toSec() 
+            else if (image_buf.back()->header.stamp.toSec() >= pose_buf.front()->header.stamp.toSec()
                 && point_buf.back()->header.stamp.toSec() >= pose_buf.front()->header.stamp.toSec())
             {
                 pose_msg = pose_buf.front();
@@ -518,7 +518,7 @@ void process()
             }
             else
                 ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::MONO8);
-            
+
             cv::Mat image = ptr->image;
             // build keyframe
             Vector3d T = Vector3d(pose_msg->pose.pose.position.x,
@@ -530,8 +530,8 @@ void process()
                                      pose_msg->pose.pose.orientation.z).toRotationMatrix();
             if((T - last_t).norm() > SKIP_DIS)
             {
-                vector<cv::Point3f> point_3d; 
-                vector<cv::Point2f> point_2d_uv; 
+                vector<cv::Point3f> point_3d;
+                vector<cv::Point2f> point_2d_uv;
                 vector<cv::Point2f> point_2d_normal;
                 vector<double> point_id;
 
@@ -619,7 +619,7 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "loop_fusion");
     ros::NodeHandle n("~");
     posegraph.registerPub(n);
-    
+
     VISUALIZATION_SHIFT_X = 0;
     VISUALIZATION_SHIFT_Y = 0;
     SKIP_CNT = 0;
@@ -640,8 +640,7 @@ int main(int argc, char **argv)
                "~/tmp/catkin_ws/src/VINS-Fusion/config/euroc/euroc_stereo_imu_config.yaml \n");
         return 0;
     }
-    
-    string config_file = argv[1];
+
     printf("config_file: %s\n", argv[1]);
 
     cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);
@@ -769,8 +768,7 @@ int main(int argc, char **argv)
         occ_grid.data = grid_data;
         g_map_puber.publish ( occ_grid );
     }
-
-
+    }
     ros::Subscriber sub_vio = n.subscribe("/vins_estimator/odometry", 2000, vio_callback);
     //ros::Subscriber sub_image = n.subscribe(IMAGE_TOPIC, 100, image_callback);
     //ros::Subscriber sub_depth = n.subscribe(DEPTH_TOPIC, 100, depth_callback);
@@ -796,7 +794,7 @@ int main(int argc, char **argv)
 
     measurement_process = std::thread(process);
     keyboard_command_process = std::thread(command);
-    
+
     ros::spin();
 
     return 0;
