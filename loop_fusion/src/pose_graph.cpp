@@ -16,6 +16,7 @@ PoseGraph::PoseGraph()
     posegraph_visualization = new CameraPoseVisualization(1.0, 0.0, 1.0, 1.0);
     posegraph_visualization->setScale(0.1);
     posegraph_visualization->setLineWidth(0.01);
+	t_optimization = std::thread(&PoseGraph::optimize4DoF, this);
     earliest_loop_index = -1;
     t_drift = Eigen::Vector3d(0, 0, 0);
     yaw_drift = 0;
@@ -1246,6 +1247,43 @@ void PoseGraph::publish()
             posegraph_visualization->publish_by(pub_pose_graph, path[sequence_cnt].header);
         }
     }
+    base_path.header.frame_id = "world";
     pub_base_path.publish(base_path);
     //posegraph_visualization->publish_by(pub_pose_graph, path[sequence_cnt].header);
+}
+
+void PoseGraph::updateKeyFrameLoop(int index, Eigen::Matrix<double, 8, 1 > &_loop_info)
+{
+    KeyFrame* kf = getKeyFrame(index);
+    kf->updateLoop(_loop_info);
+    if (abs(_loop_info(7)) < 30.0 && Vector3d(_loop_info(0), _loop_info(1), _loop_info(2)).norm() < 20.0)
+    {
+        if (FAST_RELOCALIZATION)
+        {
+            KeyFrame* old_kf = getKeyFrame(kf->loop_index);
+            Vector3d w_P_old, w_P_cur, vio_P_cur;
+            Matrix3d w_R_old, w_R_cur, vio_R_cur;
+            old_kf->getPose(w_P_old, w_R_old);
+            kf->getVioPose(vio_P_cur, vio_R_cur);
+
+            Vector3d relative_t;
+            Quaterniond relative_q;
+            relative_t = kf->getLoopRelativeT();
+            relative_q = (kf->getLoopRelativeQ()).toRotationMatrix();
+            w_P_cur = w_R_old * relative_t + w_P_old;
+            w_R_cur = w_R_old * relative_q;
+            double shift_yaw;
+            Matrix3d shift_r;
+            Vector3d shift_t;
+            shift_yaw = Utility::R2ypr(w_R_cur).x() - Utility::R2ypr(vio_R_cur).x();
+            shift_r = Utility::ypr2R(Vector3d(shift_yaw, 0, 0));
+            shift_t = w_P_cur - w_R_cur * vio_R_cur.transpose() * vio_P_cur;
+
+            m_drift.lock();
+            yaw_drift = shift_yaw;
+            r_drift = shift_r;
+            t_drift = shift_t;
+            m_drift.unlock();
+        }
+    }
 }

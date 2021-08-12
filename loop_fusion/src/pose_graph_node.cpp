@@ -69,13 +69,20 @@ int VISUALIZATION_SHIFT_Y;
 int ROW;
 int COL;
 int DEBUG_IMAGE;
+int VISUALIZE_IMU_FORWARD;
+int LOOP_CLOSURE;
+int FAST_RELOCALIZATION;
 int DEPTH;
 
 camodocal::CameraPtr m_camera;
 Eigen::Vector3d tic;
 Eigen::Matrix3d qic;
 ros::Publisher pub_match_img;
+ros::Publisher pub_match_points;
 ros::Publisher pub_camera_pose_visual;
+ros::Publisher pub_key_odometrys;
+ros::Publisher pub_vio_path;
+nav_msgs::Path no_loop_path;
 ros::Publisher pub_odometry_rect;
 ros::Publisher g_map_puber;
 
@@ -117,6 +124,8 @@ void new_sequence()
 void image_callback(const sensor_msgs::ImageConstPtr &image_msg, const sensor_msgs::ImageConstPtr &depth_msg)
 {
     //ROS_INFO("image_callback!");
+    if(!LOOP_CLOSURE)
+        return;
     m_buf.lock();
     image_buf.push(image_msg);
     depth_buf.push(depth_msg);
@@ -137,6 +146,8 @@ void image_callback(const sensor_msgs::ImageConstPtr &image_msg, const sensor_ms
 void point_callback(const sensor_msgs::PointCloudConstPtr &point_msg)
 {
     //ROS_INFO("point_callback!");
+    if(!LOOP_CLOSURE)
+        return;
     m_buf.lock();
     point_buf.push(point_msg);
     m_buf.unlock();
@@ -193,6 +204,8 @@ void margin_point_callback(const sensor_msgs::PointCloudConstPtr &point_msg)
 void pose_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 {
     //ROS_INFO("pose_callback!");
+    if(!LOOP_CLOSURE)
+        return;
     m_buf.lock();
     pose_buf.push(pose_msg);
     m_buf.unlock();
@@ -205,6 +218,54 @@ void pose_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
                                                        pose_msg->pose.pose.orientation.y,
                                                        pose_msg->pose.pose.orientation.z);
     */
+}
+
+void imu_forward_callback(const nav_msgs::Odometry::ConstPtr &forward_msg)
+{
+    if (VISUALIZE_IMU_FORWARD)
+    {
+        Vector3d vio_t(forward_msg->pose.pose.position.x, forward_msg->pose.pose.position.y, forward_msg->pose.pose.position.z);
+        Quaterniond vio_q;
+        vio_q.w() = forward_msg->pose.pose.orientation.w;
+        vio_q.x() = forward_msg->pose.pose.orientation.x;
+        vio_q.y() = forward_msg->pose.pose.orientation.y;
+        vio_q.z() = forward_msg->pose.pose.orientation.z;
+
+        vio_t = posegraph.w_r_vio * vio_t + posegraph.w_t_vio;
+        vio_q = posegraph.w_r_vio *  vio_q;
+
+        vio_t = posegraph.r_drift * vio_t + posegraph.t_drift;
+        vio_q = posegraph.r_drift * vio_q;
+
+        Vector3d vio_t_cam;
+        Quaterniond vio_q_cam;
+        vio_t_cam = vio_t + vio_q * tic;
+        vio_q_cam = vio_q * qic;
+
+        cameraposevisual.reset();
+        cameraposevisual.add_pose(vio_t_cam, vio_q_cam);
+        cameraposevisual.publish_by(pub_camera_pose_visual, forward_msg->header);
+    }
+}
+void relo_relative_pose_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
+{
+    Vector3d relative_t = Vector3d(pose_msg->pose.pose.position.x,
+                                   pose_msg->pose.pose.position.y,
+                                   pose_msg->pose.pose.position.z);
+    Quaterniond relative_q;
+    relative_q.w() = pose_msg->pose.pose.orientation.w;
+    relative_q.x() = pose_msg->pose.pose.orientation.x;
+    relative_q.y() = pose_msg->pose.pose.orientation.y;
+    relative_q.z() = pose_msg->pose.pose.orientation.z;
+    double relative_yaw = pose_msg->twist.twist.linear.x;
+    int index = pose_msg->twist.twist.linear.y;
+    //printf("receive index %d \n", index );
+    Eigen::Matrix<double, 8, 1 > loop_info;
+    loop_info << relative_t.x(), relative_t.y(), relative_t.z(),
+                 relative_q.w(), relative_q.x(), relative_q.y(), relative_q.z(),
+                 relative_yaw;
+    posegraph.updateKeyFrameLoop(index, loop_info);
+
 }
 
 void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
@@ -240,11 +301,63 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     vio_t_cam = vio_t + vio_q * tic;
     vio_q_cam = vio_q * qic;        
 
-    cameraposevisual.reset();
-    cameraposevisual.add_pose(vio_t_cam, vio_q_cam);
-    cameraposevisual.publish_by(pub_camera_pose_visual, pose_msg->header);
+    if (!VISUALIZE_IMU_FORWARD)
+    {
+        cameraposevisual.reset();
+        cameraposevisual.add_pose(vio_t_cam, vio_q_cam);
+        cameraposevisual.publish_by(pub_camera_pose_visual, pose_msg->header);
+    }
 
+    odometry_buf.push(vio_t_cam);
+    if (odometry_buf.size() > 10)
+    {
+        odometry_buf.pop();
+    }
 
+    visualization_msgs::Marker key_odometrys;
+    key_odometrys.header = pose_msg->header;
+    key_odometrys.header.frame_id = "world";
+    key_odometrys.ns = "key_odometrys";
+    key_odometrys.type = visualization_msgs::Marker::SPHERE_LIST;
+    key_odometrys.action = visualization_msgs::Marker::ADD;
+    key_odometrys.pose.orientation.w = 1.0;
+    key_odometrys.lifetime = ros::Duration();
+
+    //static int key_odometrys_id = 0;
+    key_odometrys.id = 0; //key_odometrys_id++;
+    key_odometrys.scale.x = 0.1;
+    key_odometrys.scale.y = 0.1;
+    key_odometrys.scale.z = 0.1;
+    key_odometrys.color.r = 1.0;
+    key_odometrys.color.a = 1.0;
+
+    for (unsigned int i = 0; i < odometry_buf.size(); i++)
+    {
+        geometry_msgs::Point pose_marker;
+        Vector3d vio_t;
+        vio_t = odometry_buf.front();
+        odometry_buf.pop();
+        pose_marker.x = vio_t.x();
+        pose_marker.y = vio_t.y();
+        pose_marker.z = vio_t.z();
+        key_odometrys.points.push_back(pose_marker);
+        odometry_buf.push(vio_t);
+    }
+    pub_key_odometrys.publish(key_odometrys);
+
+    if (!LOOP_CLOSURE)
+    {
+        geometry_msgs::PoseStamped pose_stamped;
+        pose_stamped.header = pose_msg->header;
+        pose_stamped.header.frame_id = "world";
+        pose_stamped.pose.position.x = vio_t.x();
+        pose_stamped.pose.position.y = vio_t.y();
+        pose_stamped.pose.position.z = vio_t.z();
+        no_loop_path.header = pose_msg->header;
+        no_loop_path.header.frame_id = "world";
+        no_loop_path.poses.push_back(pose_stamped);
+        pub_vio_path.publish(no_loop_path);
+    }
 }
 
 void extrinsic_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
@@ -262,6 +375,8 @@ void extrinsic_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 
 void process()
 {
+    if (!LOOP_CLOSURE)
+        return;
     while (true)
     {
         sensor_msgs::ImageConstPtr image_msg = NULL;
@@ -510,6 +625,14 @@ int main(int argc, char **argv)
     SKIP_CNT = 0;
     SKIP_DIS = 0;
 
+    // read param
+    n.getParam("visualization_shift_x", VISUALIZATION_SHIFT_X);
+    n.getParam("visualization_shift_y", VISUALIZATION_SHIFT_Y);
+    n.getParam("skip_cnt", SKIP_CNT);
+    n.getParam("skip_dis", SKIP_DIS);
+    std::string config_file;
+    n.getParam("config_file", config_file);
+
     if(argc != 2)
     {
         printf("please intput: rosrun loop_fusion loop_fusion_node [config file] \n"
@@ -534,13 +657,14 @@ int main(int argc, char **argv)
     std::string DEPTH_TOPIC;
     int LOAD_PREVIOUS_POSE_GRAPH;
     int LOAD_GRID_MAP;
-
-    ROW = fsSettings["image_height"];
-    COL = fsSettings["image_width"];
-    std::string pkg_path = ros::package::getPath("loop_fusion");
-    string vocabulary_file = pkg_path + "/../support_files/brief_k10L6.bin";
-    cout << "vocabulary_file" << vocabulary_file << endl;
-    posegraph.loadVocabulary(vocabulary_file);
+    if (LOOP_CLOSURE)
+    {
+        ROW = fsSettings["image_height"];
+        COL = fsSettings["image_width"];
+        std::string pkg_path = ros::package::getPath("pose_graph");
+        string vocabulary_file = pkg_path + "/../support_files/brief_k10L6.bin";
+        cout << "vocabulary_file" << vocabulary_file << endl;
+        posegraph.loadVocabulary(vocabulary_file);
 
     BRIEF_PATTERN_FILE = pkg_path + "/../support_files/brief_pattern.yml";
     cout << "BRIEF_PATTERN_FILE" << BRIEF_PATTERN_FILE << endl;

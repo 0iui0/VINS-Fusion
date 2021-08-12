@@ -8,12 +8,12 @@
  *******************************************************/
 
 #include "visualization.h"
+#include "line_geometry.h"
 
 using namespace ros;
 using namespace Eigen;
 ros::Publisher pub_odometry, pub_latest_odometry;
-ros::Publisher pub_path;
-ros::Publisher pub_point_cloud, pub_margin_cloud;
+ros::Publisher pub_point_cloud, pub_margin_cloud, pub_lines, pub_marg_lines;
 ros::Publisher pub_key_poses;
 ros::Publisher pub_camera_pose;
 ros::Publisher pub_camera_pose_visual;
@@ -21,7 +21,10 @@ nav_msgs::Path path;
 
 ros::Publisher pub_keyframe_pose;
 ros::Publisher pub_keyframe_point;
+ros::Publisher pub_relo_relative_pose;
+nav_msgs::Path relo_path;
 ros::Publisher pub_extrinsic;
+ros::Publisher pub_path, pub_relo_path;
 
 ros::Publisher pub_image_track;
 
