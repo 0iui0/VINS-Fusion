@@ -41,10 +41,10 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
     car_mesh.action = visualization_msgs::Marker::ADD;
     car_mesh.id = 0;
 
-    car_mesh.mesh_resource = "package://global_fusion/models/car.dae";
+    car_mesh.mesh_resource = "package://global_fusion/models/base_link.stl";
 
     Eigen::Matrix3d rot;
-    rot << 0, 0, -1, 0, -1, 0, -1, 0, 0;
+    rot << 1, 0, 0, 0, -1, 0, 0, 0, -1;
     
     Eigen::Quaterniond Q;
     Q = q_w_car * rot; 
@@ -143,7 +143,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 
 
     // write result to file
-    std::ofstream foutC("/home/tony-ws1/output/vio_global.csv", ios::app);
+    std::ofstream foutC("~/tmp/output/vio_global.csv", ios::app);
     foutC.setf(ios::fixed, ios::floatfield);
     foutC.precision(0);
     foutC << pose_msg->header.stamp.toSec() * 1e9 << ",";
