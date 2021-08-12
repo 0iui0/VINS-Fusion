@@ -14,6 +14,8 @@
 #include <thread>
 #include <mutex>
 #include <opencv2/opencv.hpp>
+#include <opencv2/imgcodecs/legacy/constants_c.h>
+
 #include <eigen3/Eigen/Dense>
 #include <string>
 #include <ceres/ceres.h>
@@ -21,6 +23,7 @@
 #include <queue>
 #include <assert.h>
 #include <nav_msgs/Path.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PointStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <stdio.h>
@@ -34,6 +37,13 @@
 #include "ThirdParty/DVision/DVision.h"
 #include "ThirdParty/DBoW/TemplatedDatabase.h"
 #include "ThirdParty/DBoW/TemplatedVocabulary.h"
+
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/octree/octree.h>
+#include <pcl/octree/octree_impl.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 
 
 #define SHOW_S_EDGE false
@@ -66,7 +76,9 @@ public:
 	// world frame( base sequence or first sequence)<----> cur sequence frame  
 	Vector3d w_t_vio;
 	Matrix3d w_r_vio;
-
+	pcl::octree::OctreePointCloudDensity<pcl::PointXYZRGB>* octree;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr save_cloud;
 
 private:
 	int detectLoop(KeyFrame* keyframe, int frame_index);
@@ -79,6 +91,7 @@ private:
 	std::mutex m_optimize_buf;
 	std::mutex m_path;
 	std::mutex m_drift;
+	std::mutex m_octree;
 	std::thread t_optimization;
 	std::queue<int> optimize_buf;
 
@@ -97,6 +110,8 @@ private:
 	ros::Publisher pub_base_path;
 	ros::Publisher pub_pose_graph;
 	ros::Publisher pub_path[10];
+	ros::Publisher pub_octree;
+	//ros::Publisher pub_octomap;
 };
 
 template <typename T> inline

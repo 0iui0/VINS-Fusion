@@ -34,6 +34,7 @@ int ROW, COL;
 double TD;
 int NUM_OF_CAM;
 int STEREO;
+int DEPTH;
 int USE_IMU;
 int MULTIPLE_THREAD;
 map<int, Eigen::Vector3d> pts_gt;
@@ -172,6 +173,18 @@ void readParameters(std::string config_file)
         cv::cv2eigen(cv_T, T);
         RIC.push_back(T.block<3, 3>(0, 0));
         TIC.push_back(T.block<3, 1>(0, 3));
+    }
+
+    DEPTH = fsSettings["depth"];
+    if(DEPTH == 1)
+    {
+        cv::Mat cv_T;
+        fsSettings["body_T_cam1"] >> cv_T;
+        Eigen::Matrix4d T;
+        cv::cv2eigen(cv_T, T);
+        RIC.push_back(T.block<3, 3>(0, 0));
+        TIC.push_back(T.block<3, 1>(0, 3));
+        NUM_OF_CAM++;
     }
 
     INIT_DEPTH = 5.0;

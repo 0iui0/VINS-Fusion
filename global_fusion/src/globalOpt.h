@@ -30,6 +30,7 @@ class GlobalOptimization
 public:
 	GlobalOptimization();
 	~GlobalOptimization();
+	void inputAprilTag(double t, double x, double y, double z);
 	void inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy);
 	void inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ);
 	void getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ);
@@ -44,8 +45,14 @@ private:
 	map<double, vector<double>> localPoseMap;
 	map<double, vector<double>> globalPoseMap;
 	map<double, vector<double>> GPSPositionMap;
+	map<double, vector<double>> AprilTagPositionMap;
+
 	bool initGPS;
+	bool initAprilTag;
 	bool newGPS;
+	bool newAprilTag;
+	double lastT;
+
 	GeographicLib::LocalCartesian geoConverter;
 	std::mutex mPoseMap;
 	Eigen::Matrix4d WGPS_T_WVIO;

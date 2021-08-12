@@ -306,8 +306,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
         if (it_per_id.estimated_depth > 0)
             continue;
 
-        if(STEREO && it_per_id.feature_per_frame[0].is_stereo)
-        {
+        if((STEREO || DEPTH) && it_per_id.feature_per_frame[0].is_stereo) {
             int imu_i = it_per_id.start_frame;
             Eigen::Matrix<double, 3, 4> leftPose;
             Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];

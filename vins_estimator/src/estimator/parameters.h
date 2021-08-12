@@ -20,7 +20,7 @@
 
 using namespace std;
 
-const double FOCAL_LENGTH = 460.0;
+const double FOCAL_LENGTH = 600.0;
 const int WINDOW_SIZE = 10;
 const int NUM_OF_F = 1000;
 //#define UNIT_SPHERE_ERROR
@@ -50,6 +50,7 @@ extern int ROLLING_SHUTTER;
 extern int ROW, COL;
 extern int NUM_OF_CAM;
 extern int STEREO;
+extern int DEPTH;
 extern int USE_IMU;
 extern int MULTIPLE_THREAD;
 // pts_gt for debug purpose;

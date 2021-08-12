@@ -42,7 +42,8 @@ public:
     FeatureTracker();
     map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> trackImage(double _cur_time, const cv::Mat &_img, const cv::Mat &_img1 = cv::Mat());
     void setMask();
-    void readIntrinsicParameter(const vector<string> &calib_file);
+    void addPoints();
+    void readIntrinsicParameter(const vector<string> &calib_file,const int depth);
     void showUndistortion(const string &name);
     void rejectWithF();
     void undistortedPoints();
@@ -82,6 +83,7 @@ public:
     double cur_time;
     double prev_time;
     bool stereo_cam;
+    bool depth_cam;
     int n_id;
     bool hasPrediction;
 };

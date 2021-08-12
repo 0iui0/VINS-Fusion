@@ -27,6 +27,12 @@ PoseGraph::PoseGraph()
     sequence_loop.push_back(0);
     base_sequence = 1;
     use_imu = 0;
+    octree = new pcl::octree::OctreePointCloudDensity<pcl::PointXYZRGB>( 0.01 );
+    cloud = pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>());
+    save_cloud = pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>());
+    octree->setInputCloud(cloud);
+    octree->addPointsFromInputCloud();
+    octree->defineBoundingBox(-10000, -1000, -10000, 10000, 10000, 10000);
 }
 
 PoseGraph::~PoseGraph()
@@ -41,6 +47,10 @@ void PoseGraph::registerPub(ros::NodeHandle &n)
     pub_pose_graph = n.advertise<visualization_msgs::MarkerArray>("pose_graph", 1000);
     for (int i = 1; i < 10; i++)
         pub_path[i] = n.advertise<nav_msgs::Path>("path_" + to_string(i), 1000);
+    //pub_octomap = n.advertise<octomap_msgs::Octomap>("octomap", 1000, true);
+    pub_octree = n.advertise<sensor_msgs::PointCloud2>("octree", 1000);
+
+
 }
 
 void PoseGraph::setIMUFlag(bool _use_imu)
@@ -179,6 +189,43 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     path[sequence_cnt].poses.push_back(pose_stamped);
     path[sequence_cnt].header = pose_stamped.header;
 
+    m_octree.lock();
+    sensor_msgs::PointCloud2 tmp_pcl;
+    int pcl_count_temp = 0;
+
+    if(!cur_kf->point_rgbd.empty())
+    {
+        for(auto &point_rgbd : cur_kf->point_rgbd)
+        {
+            Eigen::Vector3d point(point_rgbd[0], point_rgbd[1], point_rgbd[2]);
+            Eigen::Vector3d pointWorld = R * (qic * point + tic) + P;
+            if(pointWorld.z() > 2 || pointWorld.z() < -0.5)
+                continue;
+            pcl::PointXYZRGB searchPoint;
+            searchPoint.x = pointWorld.x();
+            searchPoint.y = pointWorld.y();
+            searchPoint.z = pointWorld.z();
+            searchPoint.r = point_rgbd[3];
+            searchPoint.g = point_rgbd[4];
+            searchPoint.b = point_rgbd[5];
+            //cout <<"x:"<< searchPoint.x <<" y:"<< searchPoint.y <<" z:"<< searchPoint.z << endl;
+
+            if(octree->getVoxelDensityAtPoint(searchPoint) < 3)
+            {
+                cur_kf->point_rgbd[pcl_count_temp] = point_rgbd;
+                octree->addPointToCloud(searchPoint, cloud);
+                // Uncomment this to get pointcloud
+                save_cloud->points.push_back(searchPoint);
+                ++pcl_count_temp;
+            }
+        }
+        cur_kf->point_rgbd.resize(pcl_count_temp);
+        pcl::toROSMsg(*(octree->getInputCloud()), tmp_pcl);
+    }
+
+
+    m_octree.unlock();
+
     if (SAVE_LOOP_PATH)
     {
         ofstream loop_path_file(VINS_RESULT_PATH, ios::app);
@@ -235,8 +282,11 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     }
     //posegraph_visualization->add_pose(P + Vector3d(VISUALIZATION_SHIFT_X, VISUALIZATION_SHIFT_Y, 0), Q);
 
-	keyframelist.push_back(cur_kf);
+    tmp_pcl.header = pose_stamped.header;
+    keyframelist.push_back(cur_kf);
     publish();
+    pub_octree.publish(tmp_pcl);
+
 	m_keyframelist.unlock();
 }
 
@@ -282,6 +332,37 @@ void PoseGraph::loadKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     pose_stamped.pose.orientation.w = Q.w();
     base_path.poses.push_back(pose_stamped);
     base_path.header = pose_stamped.header;
+
+    if(!cur_kf->point_rgbd.empty()){
+        m_octree.lock();
+        sensor_msgs::PointCloud2 tmp_pcl;
+
+        for(auto &point_rgbd : cur_kf->point_rgbd){
+            Eigen::Vector3d point(point_rgbd[0], point_rgbd[1], point_rgbd[2]);
+            Eigen::Vector3d pointWorld = R * (qic * point + tic) + P;
+            if(pointWorld.z() > 2.5 || pointWorld.z() < -0.5)
+                continue;
+            pcl::PointXYZRGB searchPoint;
+            searchPoint.x = pointWorld.x();
+            searchPoint.y = pointWorld.y();
+            searchPoint.z = pointWorld.z();
+            searchPoint.r = point_rgbd[3];
+            searchPoint.g = point_rgbd[4];
+            searchPoint.b = point_rgbd[5];
+
+            if(octree->getVoxelDensityAtPoint(searchPoint) < 3){
+                octree->addPointToCloud(searchPoint, cloud);
+                save_cloud->points.push_back(searchPoint);
+            }
+        }
+        pcl::toROSMsg(*(octree->getInputCloud()), tmp_pcl);
+
+        tmp_pcl.header = pose_stamped.header;
+        pub_octree.publish(tmp_pcl);
+        m_octree.unlock();
+    }
+
+
 
     //draw local connection
     if (SHOW_S_EDGE)
@@ -783,6 +864,9 @@ void PoseGraph::updatePath()
 {
     m_keyframelist.lock();
     list<KeyFrame*>::iterator it;
+    vector< vector< Eigen::Matrix<float ,6, 1> > > tmp_keyframelist;
+    queue< pair< Matrix3d, Vector3d> > tmp_RTlist;
+
     for (int i = 1; i <= sequence_cnt; i++)
     {
         path[i].poses.clear();
@@ -801,6 +885,9 @@ void PoseGraph::updatePath()
         Vector3d P;
         Matrix3d R;
         (*it)->getPose(P, R);
+
+        tmp_RTlist.push(make_pair(R, P));
+
         Quaterniond Q;
         Q = R;
 //        printf("path p: %f, %f, %f\n",  P.x(),  P.z(),  P.y() );
@@ -815,6 +902,9 @@ void PoseGraph::updatePath()
         pose_stamped.pose.orientation.y = Q.y();
         pose_stamped.pose.orientation.z = Q.z();
         pose_stamped.pose.orientation.w = Q.w();
+
+        tmp_keyframelist.push_back((*it)->point_rgbd);
+
         if((*it)->sequence == 0)
         {
             base_path.poses.push_back(pose_stamped);
@@ -892,6 +982,50 @@ void PoseGraph::updatePath()
     }
     publish();
     m_keyframelist.unlock();
+
+    m_octree.lock();
+    //some clean up
+    octree->deleteTree();
+    cloud->clear();
+    save_cloud->clear();
+    octree->setInputCloud(cloud);
+    octree->addPointsFromInputCloud();
+    octree->defineBoundingBox(-10000, -10000, -10000, 10000, 10000, 10000);
+
+    int update_count = 0;
+    for (auto &point_rgbd_vect : tmp_keyframelist)
+    {
+        Vector3d P;
+        Matrix3d R;
+        R = tmp_RTlist.front().first;
+        P = tmp_RTlist.front().second;
+        for (auto &point_rgbd : point_rgbd_vect)
+        {
+            Vector3d point(point_rgbd[0] , point_rgbd[1], point_rgbd[2]);
+            Vector3d pointWorld = R * (qic * point + tic) + P;
+            pcl::PointXYZRGB searchPoint;
+            searchPoint.x = pointWorld.x();
+            searchPoint.y = pointWorld.y();
+            searchPoint.z = pointWorld.z();
+            searchPoint.r = point_rgbd[3];
+            searchPoint.g = point_rgbd[4];
+            searchPoint.b = point_rgbd[5];
+            ++update_count;
+            if(octree->getVoxelDensityAtPoint(searchPoint) < 5){
+                octree->addPointToCloud(searchPoint, cloud);
+                save_cloud->points.push_back(searchPoint);
+            }
+        }
+        tmp_RTlist.pop();
+    }
+    sensor_msgs::PointCloud2 tmp_pcl;
+    pcl::toROSMsg(*(octree->getInputCloud()), tmp_pcl);
+    tmp_pcl.header.stamp =  ros::Time::now();
+    tmp_pcl.header.frame_id = "world";
+    pub_octree.publish(tmp_pcl);
+
+    m_octree.unlock();
+    //ROS_INFO("Update done! Time cost: %f   total points: %d", t_update.toc(), update_count);
 }
 
 
@@ -919,7 +1053,7 @@ void PoseGraph::savePoseGraph()
         Vector3d VIO_tmp_T = (*it)->vio_T_w_i;
         Vector3d PG_tmp_T = (*it)->T_w_i;
 
-        fprintf (pFile, " %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %f %f %f %f %f %f %f %f %d\n",(*it)->index, (*it)->time_stamp, 
+        fprintf (pFile, " %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %f %f %f %f %f %f %f %f %d %d\n",(*it)->index, (*it)->time_stamp,
                                     VIO_tmp_T.x(), VIO_tmp_T.y(), VIO_tmp_T.z(), 
                                     PG_tmp_T.x(), PG_tmp_T.y(), PG_tmp_T.z(), 
                                     VIO_tmp_Q.w(), VIO_tmp_Q.x(), VIO_tmp_Q.y(), VIO_tmp_Q.z(), 
@@ -927,7 +1061,7 @@ void PoseGraph::savePoseGraph()
                                     (*it)->loop_index, 
                                     (*it)->loop_info(0), (*it)->loop_info(1), (*it)->loop_info(2), (*it)->loop_info(3),
                                     (*it)->loop_info(4), (*it)->loop_info(5), (*it)->loop_info(6), (*it)->loop_info(7),
-                                    (int)(*it)->keypoints.size());
+                                    (int)(*it)->keypoints.size(), (int)(*it)->point_rgbd.size());
 
         // write keypoints, brief_descriptors   vector<cv::KeyPoint> keypoints vector<BRIEF::bitset> brief_descriptors;
         assert((*it)->keypoints.size() == (*it)->brief_descriptors.size());
@@ -944,6 +1078,17 @@ void PoseGraph::savePoseGraph()
         }
         brief_file.close();
         fclose(keypoints_file);
+
+        std::string densepoints_path = POSE_GRAPH_SAVE_PATH + to_string((*it)->index) + "_densepoints.txt";
+        FILE *densepoints_file;
+        densepoints_file = fopen(densepoints_path.c_str(), "w");
+        for(int i = 0; i < (int)(*it)->point_rgbd.size();i++)
+        {
+            fprintf(densepoints_file, "%f %f %f %f %f %f\n",(*it)->point_rgbd[i][0],(*it)->point_rgbd[i][1],(*it)->point_rgbd[i][2],
+                    (*it)->point_rgbd[i][3],(*it)->point_rgbd[i][4],(*it)->point_rgbd[i][5]);
+        }
+        fclose(densepoints_file);
+
     }
     fclose(pFile);
 
@@ -972,10 +1117,10 @@ void PoseGraph::loadPoseGraph()
     double loop_info_0, loop_info_1, loop_info_2, loop_info_3;
     double loop_info_4, loop_info_5, loop_info_6, loop_info_7;
     int loop_index;
-    int keypoints_num;
+    int keypoints_num,densepoints_num;
     Eigen::Matrix<double, 8, 1 > loop_info;
     int cnt = 0;
-    while (fscanf(pFile,"%d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %lf %lf %lf %lf %lf %lf %d", &index, &time_stamp, 
+    while (fscanf(pFile,"%d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %lf %lf %lf %lf %lf %lf %d %d", &index, &time_stamp,
                                     &VIO_Tx, &VIO_Ty, &VIO_Tz, 
                                     &PG_Tx, &PG_Ty, &PG_Tz, 
                                     &VIO_Qw, &VIO_Qx, &VIO_Qy, &VIO_Qz, 
@@ -983,7 +1128,7 @@ void PoseGraph::loadPoseGraph()
                                     &loop_index,
                                     &loop_info_0, &loop_info_1, &loop_info_2, &loop_info_3, 
                                     &loop_info_4, &loop_info_5, &loop_info_6, &loop_info_7,
-                                    &keypoints_num) != EOF) 
+                                    &keypoints_num, &densepoints_num) != EOF)
     {
         /*
         printf("I read: %d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %lf %lf %lf %lf %lf %lf %d\n", index, time_stamp, 
@@ -1037,8 +1182,7 @@ void PoseGraph::loadPoseGraph()
         vector<cv::KeyPoint> keypoints;
         vector<cv::KeyPoint> keypoints_norm;
         vector<BRIEF::bitset> brief_descriptors;
-        for (int i = 0; i < keypoints_num; i++)
-        {
+        for (int i = 0; i < keypoints_num; i++){
             BRIEF::bitset tmp_des;
             brief_file >> tmp_des;
             brief_descriptors.push_back(tmp_des);
@@ -1057,14 +1201,34 @@ void PoseGraph::loadPoseGraph()
         brief_file.close();
         fclose(keypoints_file);
 
-        KeyFrame* keyframe = new KeyFrame(time_stamp, index, VIO_T, VIO_R, PG_T, PG_R, image, loop_index, loop_info, keypoints, keypoints_norm, brief_descriptors);
+        string densepoints_path = POSE_GRAPH_SAVE_PATH + to_string(index) + "_densepoints.txt";
+        FILE *densepoints_file;
+        densepoints_file = fopen(densepoints_path.c_str(), "r");
+        vector<Eigen::Matrix<float ,6, 1>> points_rgbd;
+        for (int i = 0; i < densepoints_num; i++){
+            double p_x, p_y, p_z, p_r, p_g, p_b;
+            Eigen::Matrix<float ,6, 1> point_rgbd;
+            if(!fscanf(densepoints_file,"%lf %lf %lf %lf %lf %lf", &p_x, &p_y, &p_z, &p_r, &p_g, &p_b))
+                printf(" fail to load pose graph \n");
+            point_rgbd[0] = p_x;
+            point_rgbd[1] = p_y;
+            point_rgbd[2] = p_z;
+            point_rgbd[3] = p_r;
+            point_rgbd[4] = p_g;
+            point_rgbd[5] = p_b;
+            points_rgbd.push_back(point_rgbd);
+        }
+        fclose(densepoints_file);
+
+        KeyFrame* keyframe = new KeyFrame(time_stamp, index, VIO_T, VIO_R, PG_T, PG_R, image, points_rgbd, loop_index, loop_info, keypoints, keypoints_norm, brief_descriptors);
         loadKeyFrame(keyframe, 0);
-        if (cnt % 20 == 0)
+        if (cnt % 50 == 0)
         {
             publish();
         }
         cnt++;
     }
+    publish();
     fclose (pFile);
     printf("load pose graph time: %f s\n", tmp_t.toc()/1000);
     base_sequence = 0;

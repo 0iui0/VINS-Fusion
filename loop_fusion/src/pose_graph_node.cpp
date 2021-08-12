@@ -16,6 +16,13 @@
 #include <sensor_msgs/PointCloud.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
+#include <nav_msgs/OccupancyGrid.h>
+
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
+
 #include <visualization_msgs/Marker.h>
 #include <std_msgs/Bool.h>
 #include <cv_bridge/cv_bridge.h>
@@ -36,6 +43,7 @@
 using namespace std;
 
 queue<sensor_msgs::ImageConstPtr> image_buf;
+queue<sensor_msgs::ImageConstPtr> depth_buf;
 queue<sensor_msgs::PointCloudConstPtr> point_buf;
 queue<nav_msgs::Odometry::ConstPtr> pose_buf;
 queue<Eigen::Vector3d> odometry_buf;
@@ -50,12 +58,18 @@ int skip_cnt = 0;
 bool load_flag = 0;
 bool start_flag = 0;
 double SKIP_DIS = 0;
+int ESTIMATE_EXTRINSIC;
+
+int DEPTH_DIST =10;
+int DEPTH_BOUNDARY = 10;
+float RESOLUTION = 0.03;
 
 int VISUALIZATION_SHIFT_X;
 int VISUALIZATION_SHIFT_Y;
 int ROW;
 int COL;
 int DEBUG_IMAGE;
+int DEPTH;
 
 camodocal::CameraPtr m_camera;
 Eigen::Vector3d tic;
@@ -63,6 +77,7 @@ Eigen::Matrix3d qic;
 ros::Publisher pub_match_img;
 ros::Publisher pub_camera_pose_visual;
 ros::Publisher pub_odometry_rect;
+ros::Publisher g_map_puber;
 
 std::string BRIEF_PATTERN_FILE;
 std::string POSE_GRAPH_SAVE_PATH;
@@ -78,7 +93,7 @@ void new_sequence()
     printf("new sequence\n");
     sequence++;
     printf("sequence cnt %d \n", sequence);
-    if (sequence > 5)
+    if (sequence > 10)
     {
         ROS_WARN("only support 5 sequences since it's boring to copy code for more sequences.");
         ROS_BREAK();
@@ -88,6 +103,8 @@ void new_sequence()
     m_buf.lock();
     while(!image_buf.empty())
         image_buf.pop();
+    while(!depth_buf.empty())
+        depth_buf.pop();
     while(!point_buf.empty())
         point_buf.pop();
     while(!pose_buf.empty())
@@ -97,18 +114,19 @@ void new_sequence()
     m_buf.unlock();
 }
 
-void image_callback(const sensor_msgs::ImageConstPtr &image_msg)
+void image_callback(const sensor_msgs::ImageConstPtr &image_msg, const sensor_msgs::ImageConstPtr &depth_msg)
 {
     //ROS_INFO("image_callback!");
     m_buf.lock();
     image_buf.push(image_msg);
+    depth_buf.push(depth_msg);
     m_buf.unlock();
     //printf(" image time %f \n", image_msg->header.stamp.toSec());
 
     // detect unstable camera stream
     if (last_image_time == -1)
         last_image_time = image_msg->header.stamp.toSec();
-    else if (image_msg->header.stamp.toSec() - last_image_time > 1.0 || image_msg->header.stamp.toSec() < last_image_time)
+    else if (image_msg->header.stamp.toSec() - last_image_time > 3.0 )
     {
         ROS_WARN("image discontinue! detect a new sequence!");
         new_sequence();
@@ -247,6 +265,7 @@ void process()
     while (true)
     {
         sensor_msgs::ImageConstPtr image_msg = NULL;
+        sensor_msgs::ImageConstPtr depth_msg = NULL;
         sensor_msgs::PointCloudConstPtr point_msg = NULL;
         nav_msgs::Odometry::ConstPtr pose_msg = NULL;
 
@@ -272,9 +291,15 @@ void process()
                 while (!pose_buf.empty())
                     pose_buf.pop();
                 while (image_buf.front()->header.stamp.toSec() < pose_msg->header.stamp.toSec())
+                {
                     image_buf.pop();
+                    depth_buf.pop();
+                }
+
                 image_msg = image_buf.front();
                 image_buf.pop();
+                depth_msg = depth_buf.front();
+                depth_buf.pop();
 
                 while (point_buf.front()->header.stamp.toSec() < pose_msg->header.stamp.toSec())
                     point_buf.pop();
@@ -304,6 +329,63 @@ void process()
             else
             {
                 skip_cnt = 0;
+            }
+
+            vector<Eigen::Matrix<float, 6, 1>> point_rgbd;
+            if(DEPTH)
+            {
+                cv_bridge::CvImageConstPtr depth_ptr;
+                //if (depth_msg->encoding == "8UC1")
+                {
+                    sensor_msgs::Image img;
+                    img.header = depth_msg->header;
+                    img.height = depth_msg->height;
+                    img.width = depth_msg->width;
+                    img.is_bigendian = depth_msg->is_bigendian;
+                    img.step = depth_msg->step;
+                    img.data = depth_msg->data;
+                    img.encoding = sensor_msgs::image_encodings::MONO16;
+                    depth_ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO16);
+                }
+                cv::Mat depth = depth_ptr->image;
+
+                cv_bridge::CvImageConstPtr ptr;
+                {
+                    sensor_msgs::Image img;
+                    img.header = image_msg->header;
+                    img.height = image_msg->height;
+                    img.width = image_msg->width;
+                    img.is_bigendian = image_msg->is_bigendian;
+                    img.step = image_msg->step;
+                    img.data = image_msg->data;
+                    img.encoding = "rgb8";
+                    ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::RGB8);
+                }
+                cv::Mat image = ptr->image;
+                //cv::Mat image;
+                //cout<< image.channels() <<endl;
+
+                //cv::bilateralFilter(image2, image, 10, 10*2, 10/2);
+
+                for (int v = DEPTH_BOUNDARY; v < ROW - DEPTH_BOUNDARY; v += DEPTH_DIST) {
+                    for (int u = DEPTH_BOUNDARY; u < COL - DEPTH_BOUNDARY; u += DEPTH_DIST) {
+                        Eigen::Vector2d a(u, v);
+                        Eigen::Vector3d a_3d;
+                        m_camera->liftProjective(a, a_3d);
+                        float d = (depth.ptr<unsigned short>(v)[u]+ depth.ptr<unsigned short>(v-1)[u] +
+                                depth.ptr<unsigned short>(v)[u-1] + depth.ptr<unsigned short>(v+1)[u] +
+                                depth.ptr<unsigned short>(v)[u+1])/ 5000.0 * 1.15;
+                        float r = image.ptr<cv::Vec3b>(v)[u][0];
+                        float g = image.ptr<cv::Vec3b>(v)[u][1];
+                        float b = image.ptr<cv::Vec3b>(v)[u][2];
+                        if (r > 240 && g > 240 && b > 240) continue;
+                        if (d < 0.1 || d >= 7.0) continue;
+                        Eigen::Matrix<float, 6, 1> point;
+                        point << a_3d.x() * d, a_3d.y() * d, d, r, g, b;
+                        point_rgbd.push_back(point);
+                        //cout <<"r:"<< r <<" g:"<< g <<" b:"<< b <<" d:"<< d << endl;
+                    }
+                }
             }
 
             cv_bridge::CvImageConstPtr ptr;
@@ -360,12 +442,25 @@ void process()
                     //printf("u %f, v %f \n", p_2d_uv.x, p_2d_uv.y);
                 }
 
-                KeyFrame* keyframe = new KeyFrame(pose_msg->header.stamp.toSec(), frame_index, T, R, image,
-                                   point_3d, point_2d_uv, point_2d_normal, point_id, sequence);   
-                m_process.lock();
-                start_flag = 1;
-                posegraph.addKeyFrame(keyframe, 1);
-                m_process.unlock();
+                if( DEPTH )
+                {
+                    KeyFrame *keyframe = new KeyFrame(pose_msg->header.stamp.toSec(), frame_index, T, R, image, point_rgbd,
+                                                      point_3d, point_2d_uv, point_2d_normal, point_id, sequence);
+                    m_process.lock();
+                    start_flag = 1;
+                    posegraph.addKeyFrame(keyframe, 1);
+                    m_process.unlock();
+                }
+
+                else {
+                    KeyFrame* keyframe = new KeyFrame(pose_msg->header.stamp.toSec(), frame_index, T, R, image,
+                                                      point_3d, point_2d_uv, point_2d_normal, point_id, sequence);
+                    m_process.lock();
+                    start_flag = 1;
+                    posegraph.addKeyFrame(keyframe, 1);
+                    m_process.unlock();
+                }
+
                 frame_index++;
                 last_t = T;
             }
@@ -391,7 +486,14 @@ void command()
         }
         if (c == 'n')
             new_sequence();
-
+        if (c == 'd')
+        {
+            TicToc t_pcdfile;
+            posegraph.save_cloud->width = posegraph.save_cloud->points.size();
+            posegraph.save_cloud->height = 1;
+            pcl::io::savePCDFileASCII("~/catkin_ws/pcd_file_"+to_string(frame_index)+"keyframes.pcd", *(posegraph.save_cloud));
+            printf("Save pcd file done! Time cost: %f", t_pcdfile.toc());
+        }
         std::chrono::milliseconds dura(5);
         std::this_thread::sleep_for(dura);
     }
@@ -429,7 +531,9 @@ int main(int argc, char **argv)
     cameraposevisual.setLineWidth(0.01);
 
     std::string IMAGE_TOPIC;
+    std::string DEPTH_TOPIC;
     int LOAD_PREVIOUS_POSE_GRAPH;
+    int LOAD_GRID_MAP;
 
     ROW = fsSettings["image_height"];
     COL = fsSettings["image_width"];
@@ -449,10 +553,33 @@ int main(int argc, char **argv)
     printf("cam calib path: %s\n", cam0Path.c_str());
     m_camera = camodocal::CameraFactory::instance()->generateCameraFromYamlFile(cam0Path.c_str());
 
-    fsSettings["image0_topic"] >> IMAGE_TOPIC;        
+    fsSettings["image0_topic"] >> IMAGE_TOPIC;
+
+    DEPTH = fsSettings["depth"];
+    fsSettings["image1_topic"] >> DEPTH_TOPIC;
+
     fsSettings["pose_graph_save_path"] >> POSE_GRAPH_SAVE_PATH;
     fsSettings["output_path"] >> VINS_RESULT_PATH;
     fsSettings["save_image"] >> DEBUG_IMAGE;
+
+    DEPTH_DIST = fsSettings["depth_dist"];
+    DEPTH_BOUNDARY = fsSettings["depth_boundary"];
+    //RESOLUTION = fsSettings["resolution"];
+
+
+    ESTIMATE_EXTRINSIC = fsSettings["estimate_extrinsic"];
+    if (ESTIMATE_EXTRINSIC == 0){
+        cv::Mat cv_T;
+        fsSettings["body_T_cam0"] >> cv_T;
+        Eigen::Matrix4d T;
+        cv::cv2eigen(cv_T, T);
+        qic = (T.block<3, 3>(0, 0));
+        tic = (T.block<3, 1>(0, 3));
+    }
+
+    LOAD_GRID_MAP =  fsSettings["load_grid_map"];
+    string GRID_MAP_PATH = fsSettings["grid_map_save_path"];
+
 
     LOAD_PREVIOUS_POSE_GRAPH = fsSettings["load_previous_pose_graph"];
     VINS_RESULT_PATH = VINS_RESULT_PATH + "/vio_loop.csv";
@@ -463,6 +590,7 @@ int main(int argc, char **argv)
     posegraph.setIMUFlag(USE_IMU);
     fsSettings.release();
 
+    // 读取先验地图（位姿图）
     if (LOAD_PREVIOUS_POSE_GRAPH)
     {
         printf("load pose graph\n");
@@ -478,8 +606,56 @@ int main(int argc, char **argv)
         load_flag = 1;
     }
 
+    // 读取先验地图（栅格图）
+    if (LOAD_GRID_MAP)
+    {
+        printf("load grid map\n");
+        g_map_puber = n.advertise<nav_msgs::OccupancyGrid> ( "grid_map", 1 );
+        cv::Mat grid_img = cv::imread(GRID_MAP_PATH + "map.png", CV_LOAD_IMAGE_GRAYSCALE);
+        cv::flip(grid_img, grid_img, 0);
+        cv::Mat grid_img2;
+        grid_img.convertTo(grid_img2, CV_32F, 1/255.0, 0.0);
+
+        // 这些参数后续可以放到config中
+        int size_x = 1500;
+        int size_y = 500;
+        int init_x = 750;
+        int init_y = 250;
+        double cell_size = 0.05;
+
+        nav_msgs::OccupancyGrid occ_grid;
+        occ_grid.header.frame_id = "world";
+        occ_grid.header.stamp = ros::Time::now();
+        occ_grid.info.width = size_x;
+        occ_grid.info.height = size_y;
+        occ_grid.info.resolution = cell_size;
+        occ_grid.info.origin.position.x = -init_x * cell_size;
+        occ_grid.info.origin.position.y = -init_y * cell_size;
+
+        vector<signed char> grid_data(size_x * size_y, -1);
+
+        for(int j = 0; j < size_x; j++){
+            for(int i = 0; i < size_y; i++){
+                double value = 1.0 - 1.0 * grid_img2.at<float>(j,i) ;
+                cout << value << " ";
+                if(abs(value - 0.5) > 0.005)
+                    grid_data[size_x * i + j] = value * 100;
+            }
+        }
+        occ_grid.data = grid_data;
+        g_map_puber.publish ( occ_grid );
+    }
+
+
     ros::Subscriber sub_vio = n.subscribe("/vins_estimator/odometry", 2000, vio_callback);
-    ros::Subscriber sub_image = n.subscribe(IMAGE_TOPIC, 2000, image_callback);
+    //ros::Subscriber sub_image = n.subscribe(IMAGE_TOPIC, 100, image_callback);
+    //ros::Subscriber sub_depth = n.subscribe(DEPTH_TOPIC, 100, depth_callback);
+    message_filters::Subscriber<sensor_msgs::Image> sub_image(n, IMAGE_TOPIC, 1);
+    message_filters::Subscriber<sensor_msgs::Image> sub_depth(n, DEPTH_TOPIC, 1);
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image,sensor_msgs::Image> syncPolicy;
+    message_filters::Synchronizer<syncPolicy> sync(syncPolicy(10), sub_image, sub_depth);
+    sync.registerCallback(boost::bind(&image_callback, _1, _2));
+
     ros::Subscriber sub_pose = n.subscribe("/vins_estimator/keyframe_pose", 2000, pose_callback);
     ros::Subscriber sub_extrinsic = n.subscribe("/vins_estimator/extrinsic", 2000, extrinsic_callback);
     ros::Subscriber sub_point = n.subscribe("/vins_estimator/keyframe_point", 2000, point_callback);

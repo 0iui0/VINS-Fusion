@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
     camera_models
     cv_bridge
     roslib
+    pcl_ros
+    pcl_conversions
     )
 
 find_package(OpenCV)
@@ -23,7 +25,7 @@ find_package(Ceres REQUIRED)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 find_package(Eigen3)
 
-include_directories(${catkin_INCLUDE_DIRS} ${CERES_INCLUDE_DIRS}  ${EIGEN3_INCLUDE_DIR})
+include_directories(${catkin_INCLUDE_DIRS} ${CERES_INCLUDE_DIRS}  ${EIGEN3_INCLUDE_DIR}  ${OCTOMAP_INCLUDE_DIRS})
 
 catkin_package()
 
@@ -43,4 +45,4 @@ add_executable(loop_fusion_node
     src/ThirdParty/VocabularyBinary.cpp
     )
 
-target_link_libraries(loop_fusion_node ${catkin_LIBRARIES}  ${OpenCV_LIBS} ${CERES_LIBRARIES}) 
+target_link_libraries(loop_fusion_node ${catkin_LIBRARIES}  ${OpenCV_LIBS}  ${CERES_LIBRARIES} ${OCTOMAP_LIBRARIES})

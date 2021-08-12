@@ -51,6 +51,37 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 		image.release();
 }
 
+// create keyframe online with depth
+KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, cv::Mat &_image, vector<Eigen::Matrix<float ,6, 1>> &_point_rgbd,
+				   vector<cv::Point3f> &_point_3d, vector<cv::Point2f> &_point_2d_uv, vector<cv::Point2f> &_point_2d_norm,
+				   vector<double> &_point_id, int _sequence)
+{
+	time_stamp = _time_stamp;
+	index = _index;
+	vio_T_w_i = _vio_T_w_i;
+	vio_R_w_i = _vio_R_w_i;
+	T_w_i = vio_T_w_i;
+	R_w_i = vio_R_w_i;
+	origin_vio_T = vio_T_w_i;
+	origin_vio_R = vio_R_w_i;
+	image = _image.clone();
+	point_rgbd = _point_rgbd;
+	cv::resize(image, thumbnail, cv::Size(80, 60));
+	point_3d = _point_3d;
+	point_2d_uv = _point_2d_uv;
+	point_2d_norm = _point_2d_norm;
+	point_id = _point_id;
+	has_loop = false;
+	loop_index = -1;
+	has_fast_point = false;
+	loop_info << 0, 0, 0, 0, 0, 0, 0, 0;
+	sequence = _sequence;
+	computeWindowBRIEFPoint();
+	computeBRIEFPoint();
+	if(!DEBUG_IMAGE)
+		image.release();
+}
+
 // load previous keyframe
 KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
 					cv::Mat &_image, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
@@ -82,6 +113,37 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 	brief_descriptors = _brief_descriptors;
 }
 
+// load previous keyframe with depth
+KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
+				   cv::Mat &_image, vector<Eigen::Matrix<float ,6, 1>> &_point_rgbd, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
+				   vector<cv::KeyPoint> &_keypoints, vector<cv::KeyPoint> &_keypoints_norm, vector<BRIEF::bitset> &_brief_descriptors)
+{
+	time_stamp = _time_stamp;
+	index = _index;
+	//vio_T_w_i = _vio_T_w_i;
+	//vio_R_w_i = _vio_R_w_i;
+	vio_T_w_i = _T_w_i;
+	vio_R_w_i = _R_w_i;
+	T_w_i = _T_w_i;
+	R_w_i = _R_w_i;
+	if (DEBUG_IMAGE)
+	{
+		image = _image.clone();
+		cv::resize(image, thumbnail, cv::Size(80, 60));
+	}
+	point_rgbd = _point_rgbd;
+	if (_loop_index != -1)
+		has_loop = true;
+	else
+		has_loop = false;
+	loop_index = _loop_index;
+	loop_info = _loop_info;
+	has_fast_point = false;
+	sequence = 0;
+	keypoints = _keypoints;
+	keypoints_norm = _keypoints_norm;
+	brief_descriptors = _brief_descriptors;
+}
 
 void KeyFrame::computeWindowBRIEFPoint()
 {

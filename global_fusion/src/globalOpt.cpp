@@ -16,6 +16,8 @@ GlobalOptimization::GlobalOptimization()
 {
 	initGPS = false;
     newGPS = false;
+    initAprilTag = false;
+
 	WGPS_T_WVIO = Eigen::Matrix4d::Identity();
     threadOpt = std::thread(&GlobalOptimization::optimize, this);
 }
@@ -76,6 +78,21 @@ void GlobalOptimization::getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaternion
     odomQ = lastQ;
 }
 
+void GlobalOptimization::inputAprilTag(double t, double x, double y, double z)
+{
+    if(!initGPS){
+        lastT = t;
+    }
+    else if(t-lastT <1)
+        return ;
+    vector<double> tmp{x, y, z, 0.1};
+    AprilTagPositionMap[t] = tmp;
+    newAprilTag = true;
+    lastT = t;
+    printf("AprilTag x: %f y: %f z: %f\n", x, y, z);
+}
+
+
 void GlobalOptimization::inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy)
 {
 	double xyz[3];
@@ -129,7 +146,7 @@ void GlobalOptimization::optimize()
                 problem.AddParameterBlock(t_array[i], 3);
             }
 
-            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS;
+            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterAprilTag;
             int i = 0;
             for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, i++)
             {
@@ -155,33 +172,17 @@ void GlobalOptimization::optimize()
                                                                                 iQj.w(), iQj.x(), iQj.y(), iQj.z(),
                                                                                 0.1, 0.01);
                     problem.AddResidualBlock(vio_function, NULL, q_array[i], t_array[i], q_array[i+1], t_array[i+1]);
+                }
 
-                    /*
-                    double **para = new double *[4];
-                    para[0] = q_array[i];
-                    para[1] = t_array[i];
-                    para[3] = q_array[i+1];
-                    para[4] = t_array[i+1];
-
-                    double *tmp_r = new double[6];
-                    double **jaco = new double *[4];
-                    jaco[0] = new double[6 * 4];
-                    jaco[1] = new double[6 * 3];
-                    jaco[2] = new double[6 * 4];
-                    jaco[3] = new double[6 * 3];
-                    vio_function->Evaluate(para, tmp_r, jaco);
-
-                    std::cout << Eigen::Map<Eigen::Matrix<double, 6, 1>>(tmp_r).transpose() << std::endl
-                        << std::endl;
-                    std::cout << Eigen::Map<Eigen::Matrix<double, 6, 4, Eigen::RowMajor>>(jaco[0]) << std::endl
-                        << std::endl;
-                    std::cout << Eigen::Map<Eigen::Matrix<double, 6, 3, Eigen::RowMajor>>(jaco[1]) << std::endl
-                        << std::endl;
-                    std::cout << Eigen::Map<Eigen::Matrix<double, 6, 4, Eigen::RowMajor>>(jaco[2]) << std::endl
-                        << std::endl;
-                    std::cout << Eigen::Map<Eigen::Matrix<double, 6, 3, Eigen::RowMajor>>(jaco[3]) << std::endl
-                        << std::endl;
-                    */
+                //AprilTag factor
+                double t0 = iterVIO->first;
+                iterAprilTag = AprilTagPositionMap.find(t0);
+                if (iterAprilTag != AprilTagPositionMap.end())
+                {
+                    ceres::CostFunction* gps_function = TError::Create(iterAprilTag->second[0], iterAprilTag->second[1],
+                                                                       iterAprilTag->second[2], iterAprilTag->second[3]);
+                    //printf("inverse weight %f \n", iterGPS->second[3]);
+                    problem.AddResidualBlock(gps_function, loss_function, t_array[i]);
 
                 }
                 //gps factor

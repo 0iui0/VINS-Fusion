@@ -67,12 +67,36 @@ cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
     return img;
 }
 
+
+cv::Mat getDepthImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
+{
+    //depth has encoding TYPE_16UC1
+    cv_bridge::CvImageConstPtr depth_ptr;
+    //if (img_msg->encoding == "8UC1")
+    {
+        sensor_msgs::Image img;
+        img.header = img_msg->header;
+        img.height = img_msg->height;
+        img.width = img_msg->width;
+        img.is_bigendian = img_msg->is_bigendian;
+        img.step = img_msg->step;
+        img.data = img_msg->data;
+        img.encoding = sensor_msgs::image_encodings::MONO16;
+        depth_ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO16);
+    }
+    //else
+    //depth_ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO16);
+    cv::Mat img = depth_ptr->image.clone();
+    return img;
+}
+
+
 // extract images with same timestamp from two topics
 void sync_process()
 {
     while(1)
     {
-        if(STEREO)
+        if(STEREO || DEPTH)
         {
             cv::Mat image0, image1;
             std_msgs::Header header;
@@ -99,8 +123,17 @@ void sync_process()
                     header = img0_buf.front()->header;
                     image0 = getImageFromMsg(img0_buf.front());
                     img0_buf.pop();
-                    image1 = getImageFromMsg(img1_buf.front());
-                    img1_buf.pop();
+
+                    if(DEPTH)
+                    {
+                        image1 = getDepthImageFromMsg(img1_buf.front());
+                        img1_buf.pop();
+                    }
+                    else
+                    {
+                        image1 = getImageFromMsg(img1_buf.front());
+                        img1_buf.pop();
+                    }
                     //printf("find img0 and img1\n");
                 }
             }
@@ -185,6 +218,12 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
     if (restart_msg->data == true)
     {
         ROS_WARN("restart the estimator!");
+        m_buf.lock();
+        while(!feature_buf.empty())
+            feature_buf.pop();
+        while(!imu_buf.empty())
+            imu_buf.pop();
+        m_buf.unlock();
         estimator.clearState();
         estimator.setParameter();
     }
@@ -256,7 +295,7 @@ int main(int argc, char **argv)
     }
     ros::Subscriber sub_feature = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
     ros::Subscriber sub_img0 = n.subscribe(IMAGE0_TOPIC, 100, img0_callback);
-    ros::Subscriber sub_img1;
+    ros::Subscriber sub_img1 = n.subscribe(IMAGE1_TOPIC, 100, img1_callback);
     if(STEREO)
     {
         sub_img1 = n.subscribe(IMAGE1_TOPIC, 100, img1_callback);

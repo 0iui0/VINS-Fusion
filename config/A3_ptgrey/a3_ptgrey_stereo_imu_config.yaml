@@ -6,10 +6,10 @@ imu: 1
 num_of_cam: 2  
 
 imu_topic: "/djiros/imu"
-image0_topic: "/pg_17533297/image"
-image1_topic: "/pg_17593110/image"
-#image0_topic: "/stereo/left/image"
-#image1_topic: "/stereo/right/image"
+#image0_topic: "/pg_17533297/image"
+#image1_topic: "/pg_17593110/image"
+image0_topic: "/stereo/left/image"
+image1_topic: "/stereo/right/image"
 output_path: "~/tmp/output/"
 
 cam0_calib: "left.yaml"
@@ -19,7 +19,7 @@ image_height: 512
    
 
 # Extrinsic parameter between IMU and Camera.
-estimate_extrinsic: 1   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
+estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
                         # 1  Have an initial guess about extrinsic parameters. We will optimize around your initial guess.
 
 body_T_cam0: !!opencv-matrix

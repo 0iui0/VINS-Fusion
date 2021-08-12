@@ -46,9 +46,19 @@ public:
 	KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, cv::Mat &_image,
 			 vector<cv::Point3f> &_point_3d, vector<cv::Point2f> &_point_2d_uv, vector<cv::Point2f> &_point_2d_normal, 
 			 vector<double> &_point_id, int _sequence);
+
+	KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, cv::Mat &_image, vector<Eigen::Matrix<float ,6, 1>>& _point_rgbd,
+			 vector<cv::Point3f> &_point_3d, vector<cv::Point2f> &_point_2d_uv, vector<cv::Point2f> &_point_2d_normal,
+			 vector<double> &_point_id, int _sequence);
+
 	KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
 			 cv::Mat &_image, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
 			 vector<cv::KeyPoint> &_keypoints, vector<cv::KeyPoint> &_keypoints_norm, vector<BRIEF::bitset> &_brief_descriptors);
+
+	KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3d &_vio_R_w_i, Vector3d &_T_w_i, Matrix3d &_R_w_i,
+			 cv::Mat &_image, vector<Eigen::Matrix<float ,6, 1>>& _point_rgbd, int _loop_index, Eigen::Matrix<double, 8, 1 > &_loop_info,
+			 vector<cv::KeyPoint> &_keypoints, vector<cv::KeyPoint> &_keypoints_norm, vector<BRIEF::bitset> &_brief_descriptors);
+
 	bool findConnection(KeyFrame* old_kf);
 	void computeWindowBRIEFPoint();
 	void computeBRIEFPoint();
@@ -96,8 +106,9 @@ public:
 	Eigen::Matrix3d origin_vio_R;
 	cv::Mat image;
 	cv::Mat thumbnail;
-	vector<cv::Point3f> point_3d; 
-	vector<cv::Point2f> point_2d_uv;
+	vector<cv::Point3f> point_3d;
+    vector<Eigen::Matrix<float ,6, 1>> point_rgbd;
+    vector<cv::Point2f> point_2d_uv;
 	vector<cv::Point2f> point_2d_norm;
 	vector<double> point_id;
 	vector<cv::KeyPoint> keypoints;

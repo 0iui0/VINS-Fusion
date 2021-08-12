@@ -108,7 +108,7 @@ void Estimator::setParameter()
     td = TD;
     g = G;
     cout << "set g " << g.transpose() << endl;
-    featureTracker.readIntrinsicParameter(CAM_NAMES);
+    featureTracker.readIntrinsicParameter(CAM_NAMES,DEPTH);
 
     std::cout << "MULTIPLE_THREAD is " << MULTIPLE_THREAD << '\n';
     if (MULTIPLE_THREAD && !initThreadFlag)
@@ -204,6 +204,7 @@ void Estimator::inputIMU(double t, const Vector3d &linearAcceleration, const Vec
     //printf("input imu with time %f \n", t);
     mBuf.unlock();
 
+    fastPredictIMU(t, linearAcceleration, angularVelocity);
     if (solver_flag == NON_LINEAR)
     {
         mPropagate.lock();
@@ -454,7 +455,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     if (solver_flag == INITIAL)
     {
         // monocular + IMU initilization
-        if (!STEREO && USE_IMU)
+        if (!(STEREO || DEPTH) && USE_IMU)
         {
             if (frame_count == WINDOW_SIZE)
             {
@@ -466,6 +467,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
                 }
                 if(result)
                 {
+                    solver_flag = NON_LINEAR;
                     optimization();
                     updateLatestStates();
                     solver_flag = NON_LINEAR;
@@ -478,7 +480,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         }
 
         // stereo + IMU initilization
-        if(STEREO && USE_IMU)
+        else if((STEREO || DEPTH) && USE_IMU)
         {
             f_manager.initFramePoseByPnP(frame_count, Ps, Rs, tic, ric);
             f_manager.triangulate(frame_count, Ps, Rs, tic, ric);
@@ -492,21 +494,33 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
                     frame_it->second.T = Ps[i];
                     i++;
                 }
-                solveGyroscopeBias(all_image_frame, Bgs);
-                for (int i = 0; i <= WINDOW_SIZE; i++)
+                bool result = false;
+                if(ESTIMATE_EXTRINSIC != 2 && (header - initial_timestamp) > 0.1)
                 {
-                    pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
+                    result = 1;//visualInitialAlignWithDepth();
+                    initial_timestamp = header;
                 }
-                optimization();
-                updateLatestStates();
-                solver_flag = NON_LINEAR;
-                slideWindow();
-                ROS_INFO("Initialization finish!");
+
+                if(result)
+                {
+
+                    solveGyroscopeBias(all_image_frame,Bgs);
+                    for (int i = 0; i <= WINDOW_SIZE; i++)
+                    {
+                        pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
+                    }
+                    solver_flag = NON_LINEAR;
+                    optimization();
+                    slideWindow();
+                    ROS_INFO("Initialization finish!");
+                }
+                else
+                    slideWindow();
             }
         }
 
         // stereo only initilization
-        if(STEREO && !USE_IMU)
+        else if((STEREO || DEPTH) && !USE_IMU)
         {
             f_manager.initFramePoseByPnP(frame_count, Ps, Rs, tic, ric);
             f_manager.triangulate(frame_count, Ps, Rs, tic, ric);
@@ -746,6 +760,68 @@ bool Estimator::visualInitialAlign()
     }
 
     double s = (x.tail<1>())(0);
+    for (int i = 0; i <= WINDOW_SIZE; i++)
+    {
+        pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
+    }
+    for (int i = frame_count; i >= 0; i--)
+        Ps[i] = s * Ps[i] - Rs[i] * TIC[0] - (s * Ps[0] - Rs[0] * TIC[0]);
+    int kv = -1;
+    map<double, ImageFrame>::iterator frame_i;
+    for (frame_i = all_image_frame.begin(); frame_i != all_image_frame.end(); frame_i++)
+    {
+        if(frame_i->second.is_key_frame)
+        {
+            kv++;
+            Vs[kv] = frame_i->second.R * x.segment<3>(kv * 3);
+        }
+    }
+
+    Matrix3d R0 = Utility::g2R(g);
+    double yaw = Utility::R2ypr(R0 * Rs[0]).x();
+    R0 = Utility::ypr2R(Eigen::Vector3d{-yaw, 0, 0}) * R0;
+    g = R0 * g;
+    //Matrix3d rot_diff = R0 * Rs[0].transpose();
+    Matrix3d rot_diff = R0;
+    for (int i = 0; i <= frame_count; i++)
+    {
+        Ps[i] = rot_diff * Ps[i];
+        Rs[i] = rot_diff * Rs[i];
+        Vs[i] = rot_diff * Vs[i];
+    }
+    ROS_DEBUG_STREAM("g0     " << g.transpose());
+    ROS_DEBUG_STREAM("my R0  " << Utility::R2ypr(Rs[0]).transpose());
+
+    f_manager.clearDepth();
+    f_manager.triangulate(frame_count, Ps, Rs, tic, ric);
+
+    return true;
+}
+
+
+bool Estimator::visualInitialAlignWithDepth()
+{
+    TicToc t_g;
+    VectorXd x;
+    //solve scale
+    bool result = VisualIMUAlignmentWithDepth(all_image_frame, Bgs, g, x);
+    if(!result)
+    {
+        ROS_DEBUG("solve g failed!");
+        return false;
+    }
+
+    // change state
+    for (int i = 0; i <= frame_count; i++)
+    {
+        Matrix3d Ri = all_image_frame[Headers[i]].R;
+        Vector3d Pi = all_image_frame[Headers[i]].T;
+        Ps[i] = Pi;
+        Rs[i] = Ri;
+        all_image_frame[Headers[i]].is_key_frame = true;
+    }
+    double s = (x.tail<1>())(0);
+    cout<< "s:"<<s<<endl;
     for (int i = 0; i <= WINDOW_SIZE; i++)
     {
         pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
@@ -1086,7 +1162,7 @@ void Estimator::optimization()
                 problem.AddResidualBlock(f_td, loss_function, para_Pose[imu_i], para_Pose[imu_j], para_Ex_Pose[0], para_Feature[feature_index], para_Td[0]);
             }
 
-            if(STEREO && it_per_frame.is_stereo)
+            if((DEPTH || STEREO)  && it_per_frame.is_stereo)
             {                
                 Vector3d pts_j_right = it_per_frame.pointRight;
                 if(imu_i != imu_j)
@@ -1200,7 +1276,7 @@ void Estimator::optimization()
                                                                                         vector<int>{0, 3});
                         marginalization_info->addResidualBlockInfo(residual_block_info);
                     }
-                    if(STEREO && it_per_frame.is_stereo)
+                    if((DEPTH || STEREO) && it_per_frame.is_stereo)
                     {
                         Vector3d pts_j_right = it_per_frame.pointRight;
                         if(imu_i != imu_j)

@@ -48,6 +48,7 @@ void reduceVector(vector<int> &v, vector<uchar> status)
 FeatureTracker::FeatureTracker()
 {
     stereo_cam = 0;
+    depth_cam = 0;
     n_id = 0;
     hasPrediction = false;
 }
@@ -80,6 +81,16 @@ void FeatureTracker::setMask()
             track_cnt.push_back(it.first);
             cv::circle(mask, it.second.first, MIN_DIST, 0, -1);
         }
+    }
+}
+
+void FeatureTracker::addPoints()
+{
+    for (auto &p : n_pts)
+    {
+        cur_pts.push_back(p);
+        ids.push_back(n_id++);
+        track_cnt.push_back(1);
     }
 }
 
@@ -150,9 +161,19 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
             }
         }
         
-        for (int i = 0; i < int(cur_pts.size()); i++)
+        for (int i = 0; i < int(cur_pts.size()); i++){
             if (status[i] && !inBorder(cur_pts[i]))
                 status[i] = 0;
+            int p_u, p_v;
+            p_u = (int) cur_pts[i].x;
+            p_v = (int) cur_pts[i].y;
+            float grey = cur_img.at<uchar>(p_u,p_v);
+            if (status[i] && grey > 250){
+                status[i] = 0;
+                // cout<<grey<<endl;
+            }
+        }
+
         reduceVector(prev_pts, status);
         reduceVector(cur_pts, status);
         reduceVector(ids, status);
@@ -187,19 +208,62 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
             n_pts.clear();
         ROS_DEBUG("detect feature costs: %f ms", t_t.toc());
 
-        for (auto &p : n_pts)
-        {
-            cur_pts.push_back(p);
-            ids.push_back(n_id++);
-            track_cnt.push_back(1);
-        }
-        //printf("feature cnt after add %d\n", (int)ids.size());
+        ROS_DEBUG("add feature begins");
+        TicToc t_a;
+        addPoints();
+        ROS_DEBUG("selectFeature costs: %fms", t_a.toc());
     }
 
     cur_un_pts = undistortedPts(cur_pts, m_camera[0]);
     pts_velocity = ptsVelocity(ids, cur_un_pts, cur_un_pts_map, prev_un_pts_map);
 
-    if(!_img1.empty() && stereo_cam)
+    if(!_img1.empty() && depth_cam)
+    {
+        ids_right.clear();
+        cur_right_pts.clear();
+        cur_un_right_pts.clear();
+        right_pts_velocity.clear();
+        cur_un_right_pts_map.clear();
+        if(!cur_pts.empty())
+        {
+            ids_right = ids;
+            cur_right_pts = cur_pts;
+            cur_un_right_pts = cur_un_pts;
+            size_t N = cur_pts.size();
+            vector<uchar> status(N,0);
+            for(size_t i = 0; i < N; i++)
+            {
+                int p_u, p_v;
+                p_u = (int) cur_pts[i].x;
+                p_v = (int) cur_pts[i].y;
+                float d = 1.15 * rightImg.ptr<unsigned short >(p_v)[p_u];
+                //cout <<d<<endl;
+                if(d > 0 && d < 7000)
+                {
+                    cur_un_right_pts[i].x = cur_un_pts[i].x - 100.0 / d;
+                    cur_un_right_pts[i].y = cur_un_pts[i].y;
+                    //cout <<cur_un_right_pts[i].x<<endl;
+                    status[i] = 1;
+                }
+            }
+            reduceVector(cur_right_pts, status);
+            reduceVector(cur_un_right_pts, status);
+            reduceVector(ids_right, status);
+
+
+            reduceVector(cur_pts, status);
+            reduceVector(ids, status);
+            reduceVector(track_cnt, status);
+            reduceVector(cur_un_pts, status);
+            reduceVector(pts_velocity, status);
+
+
+            right_pts_velocity = ptsVelocity(ids_right, cur_un_right_pts, cur_un_right_pts_map, prev_un_right_pts_map);
+
+        }
+        prev_un_right_pts_map = cur_un_right_pts_map;
+    }
+    else if(!_img1.empty() && stereo_cam)
     {
         ids_right.clear();
         cur_right_pts.clear();
@@ -278,7 +342,7 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
         featureFrame[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
     }
 
-    if (!_img1.empty() && stereo_cam)
+    if (!_img1.empty() && (stereo_cam || depth_cam))
     {
         for (size_t i = 0; i < ids_right.size(); i++)
         {
@@ -339,7 +403,7 @@ void FeatureTracker::rejectWithF()
     }
 }
 
-void FeatureTracker::readIntrinsicParameter(const vector<string> &calib_file)
+void FeatureTracker::readIntrinsicParameter(const vector<string> &calib_file,const int depth)
 {
     for (size_t i = 0; i < calib_file.size(); i++)
     {
@@ -349,6 +413,8 @@ void FeatureTracker::readIntrinsicParameter(const vector<string> &calib_file)
     }
     if (calib_file.size() == 2)
         stereo_cam = 1;
+    if(depth)
+        depth_cam = 1;
 }
 
 void FeatureTracker::showUndistortion(const string &name)
@@ -383,9 +449,8 @@ void FeatureTracker::showUndistortion(const string &name)
             //ROS_ERROR("(%f %f) -> (%f %f)", distortedp[i].y, distortedp[i].x, pp.at<float>(1, 0), pp.at<float>(0, 0));
         }
     }
-    // turn the following code on if you need
-    // cv::imshow(name, undistortedImg);
-    // cv::waitKey(0);
+    cv::imshow(name, undistortedImg);
+    cv::waitKey(0);
 }
 
 vector<cv::Point2f> FeatureTracker::undistortedPts(vector<cv::Point2f> &pts, camodocal::CameraPtr cam)
@@ -494,6 +559,9 @@ void FeatureTracker::drawTrack(const cv::Mat &imLeft, const cv::Mat &imRight,
 
     //cv::Mat imCur2Compress;
     //cv::resize(imCur2, imCur2Compress, cv::Size(cols, rows / 2));
+
+    cv::imshow("tracking", imTrack);
+    cv::waitKey(2);
 }
 
 
